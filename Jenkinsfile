@@ -1,49 +1,7 @@
-#!groovy
-import groovy.json.JsonSlurperClassic
-node {
-
-    def BUILD_NUMBER=env.BUILD_NUMBER
-    def RUN_ARTIFACT_DIR="tests/${BUILD_NUMBER}"
-    def SFDC_USERNAME
-
-    def HUB_ORG=env.HUB_ORG_DH
-    def SFDC_HOST = env.SFDC_HOST_DH
-    def JWT_KEY_CRED_ID = env.JWT_CRED_ID_DH
-    def CONNECTED_APP_CONSUMER_KEY=env.CONNECTED_APP_CONSUMER_KEY_DH
-
-    println 'KEY IS' 
-    println JWT_KEY_CRED_ID
-    println HUB_ORG
-    println SFDC_HOST
-    println CONNECTED_APP_CONSUMER_KEY
-    def toolbelt = tool 'toolbelt'
-
-    stage('checkout source') {
-        // when running in multi-branch job, one must issue this command
-        checkout scm
-    }
-
-    withCredentials([file(credentialsId: JWT_KEY_CRED_ID, variable: 'jwt_key_file')]) {
-        stage('Deploye Code') {
-            if (isUnix()) {
-                rc = sh returnStatus: true, script: "${toolbelt} force:auth:jwt:grant --clientid ${CONNECTED_APP_CONSUMER_KEY} --username ${HUB_ORG} --jwtkeyfile ${jwt_key_file} --setdefaultdevhubusername --instanceurl ${SFDC_HOST}"
-            }else{
-                 rc = bat returnStatus: true, script: "\"${toolbelt}\" auth:jwt:grant --clientid ${CONNECTED_APP_CONSUMER_KEY} --username ${HUB_ORG} --jwtkeyfile \"${jwt_key_file}\" --setdefaultdevhubusername --instanceurl ${SFDC_HOST}"
-            }
-            if (rc != 0) { error 'hub org authorization failed' }
-
-			println rc
-			
-			// need to pull out assigned username
-			if (isUnix()) {
-				rmsg = sh returnStdout: true, script: "${toolbelt} force:mdapi:deploy -d manifest/. -u ${HUB_ORG}"
-			}else{
-			   rmsg = bat returnStdout: true, script: "\"${toolbelt}\" force:mdapi:deploy -d manifest/. -u ${HUB_ORG}"
-			}
-			  
-            printf rmsg
-            println('Hello from a Job DSL script!')
-            println(rmsg)
-        }
-    }
-}
+library 'reference-pipeline'
+pipeline {  agent {    docker {    label 'docker'    image '    args '-u root:root'    }  }
+  parameters {    choice(name: 'CF_ENV', choices: 'UAT', description: 'Target Environment')  }
+  options {    buildDiscarder(logRotator(numToKeepStr: '10'))  }
+  tools {    jdk 'JAVA_8'  }
+  stages {
+    stage('Validate Commit') {      // when {      //   anyOf {      //     environment name: 'CF_ENV', value: 'development'      //     branch 'development'      //   }      //   not {      //     anyOf {      //       environment name: 'CF_ENV', value: 'release'      //       environment name: 'CF_ENV', value: 'staging'      //       environment name: 'CF_ENV', value: 'production'      //     }      //   }      // }      steps {        echo("Test committed source on Saleforce Sandbox")          withCredentials([sshUserPrivateKey(credentialsId: 'CED_UAT', keyFileVariable: 'CED_SERVER_KEY', passphraseVariable: 'CED_CLIENT_ID', usernameVariable: 'CED_USER')]) {          sh '''            pwd            ls -ltra            chmod 0777 /            ./ci-sandbox.sh          '''        }      }    }  }}

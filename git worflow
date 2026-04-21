@@ -1,0 +1,118 @@
+name: Salesforce  Deployment (Delta + Specified Tests)
+
+on:
+  pull_request:
+    branches: [  ]
+  push:
+    branches: [ ]
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run Apex test classes?'
+        type: boolean
+        default: false
+      manual_tests:
+        description: 'Optional test class names (comma separated)'
+        required: false
+        default: ''
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Salesforce CLI + Delta plugin
+        run: |
+          npm install --global @salesforce/cli
+          echo y | sfdx plugins:install sfdx-git-delta
+
+      - name: Set SALESFORCE environment
+        id: env
+        run: |
+          echo "AUTH=${{ secrets.SFDX_AUTH_URL_uat }}" >> $GITHUB_OUTPUT
+          echo "ALIAS=uat" >> $GITHUB_OUTPUT
+          echo "FROM=${{ github.event.pull_request.base.sha }}" >> $GITHUB_OUTPUT
+          echo "TESTS=Academiccalendartest" >> $GITHUB_OUTPUT
+
+      - name: Auth Salesforce org
+        run: |
+          echo "${{ steps.env.outputs.AUTH }}" > auth.txt
+          sf org login sfdx-url -f auth.txt --alias ${{ steps.env.outputs.ALIAS }} --set-default
+          sf org list
+
+      - name: Generate delta package
+        run: |
+          mkdir -p delta
+          sfdx sgd:source:delta --to HEAD --from "${{ steps.env.outputs.FROM }}" --output-dir delta --generate-delta
+          ls -R delta
+
+      - name: Validate delta (conditional tests)
+        run: |
+          if [ -f delta/package/package.xml ]; then
+            if [ "${{ github.event.inputs.run_tests }}" = "true" ]; then
+              TESTS="${{ github.event.inputs.manual_tests }}"
+              if [ -z "$TESTS" ]; then
+                TESTS="${{ steps.env.outputs.TESTS }}"
+              fi
+              sf project deploy start -x delta/package/package.xml -o ${{ steps.env.outputs.ALIAS }} --test-level RunSpecifiedTests --tests "$TESTS" --dry-run --wait 30
+            else
+              sf project deploy start -x delta/package/package.xml -o ${{ steps.env.outputs.ALIAS }} --test-level NoTestRun --dry-run --wait 30
+            fi
+          else
+            echo "No delta changes detected, skipping validation."
+          fi
+
+  deploy:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Salesforce CLI + Delta plugin
+        run: |
+          npm install --global @salesforce/cli
+          echo y | sfdx plugins:install sfdx-git-delta
+
+      - name: Set UAT environment
+        id: env
+        run: |
+          echo "AUTH=${{ secrets.SFDX_AUTH_URL_UAT }}" >> $GITHUB_OUTPUT
+          echo "ALIAS=uat" >> $GITHUB_OUTPUT
+          echo "FROM=${{ github.event.before }}" >> $GITHUB_OUTPUT
+          echo "TESTS=Academiccalendartest" >> $GITHUB_OUTPUT
+
+      - name: Auth UAT org
+        run: |
+          echo "${{ steps.env.outputs.AUTH }}" > auth.txt
+          sf org login sfdx-url -f auth.txt --alias ${{ steps.env.outputs.ALIAS }} --set-default
+          sf org list
+
+      - name: Generate delta package
+        run: |
+          mkdir -p delta
+          sfdx sgd:source:delta --to HEAD --from "${{ steps.env.outputs.FROM }}" --output-dir delta --generate-delta
+          ls -R delta
+
+      - name: Deploy delta to UAT (conditional tests)
+        run: |
+          if [ -f delta/package/package.xml ]; then
+            if [ "${{ github.event.inputs.run_tests }}" = "true" ]; then
+              TESTS="${{ github.event.inputs.manual_tests }}"
+              if [ -z "$TESTS" ]; then
+                TESTS="${{ steps.env.outputs.TESTS }}"
+              fi
+              sf project deploy start -x delta/package/package.xml -o ${{ steps.env.outputs.ALIAS }} --test-level RunSpecifiedTests --tests "$TESTS" --wait 60
+            else
+              sf project deploy start -x delta/package/package.xml -o ${{ steps.env.outputs.ALIAS }} --test-level NoTestRun --wait 60
+            fi
+          else
+            echo "No delta changes detected, skipping deployment."
+          fi
